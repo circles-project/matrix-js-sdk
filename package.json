@@ -1,5 +1,5 @@
 {
-    "name": "@circles-project/matrix-js-sdk",
+    "name": "matrix-js-sdk",
     "version": "34.5.0",
     "description": "Matrix Client-Server SDK for Javascript",
     "engines": {
@@ -26,7 +26,7 @@
     },
     "repository": {
         "type": "git",
-        "url": "https://github.com/circles-project/matrix-js-sdk"
+        "url": "https://github.com/matrix-org/matrix-js-sdk"
     },
     "keywords": [
         "matrix-org"
@@ -128,8 +128,5 @@
         "outputDirectory": "coverage",
         "outputName": "jest-sonar-report.xml",
         "relativePaths": true
-    },
-    "publishConfig": {
-        "registry": "https://npm.pkg.github.com"
     }
 }
