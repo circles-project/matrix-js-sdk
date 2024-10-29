@@ -53,6 +53,7 @@
         "@matrix-org/matrix-sdk-crypto-wasm": "^7.0.0",
         "@matrix-org/olm": "3.2.15",
         "another-json": "^0.2.0",
+        "base64-js": "^1.5.1",
         "bs58": "^6.0.0",
         "content-type": "^1.0.4",
         "jwt-decode": "^4.0.0",

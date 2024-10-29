@@ -102,7 +102,7 @@ import {
 import { IIdentityServerProvider } from "./@types/IIdentityServerProvider.ts";
 import { MatrixScheduler } from "./scheduler.ts";
 import { BeaconEvent, BeaconEventHandlerMap } from "./models/beacon.ts";
-import { AuthDict } from "./interactive-auth.ts";
+import { AuthDict, IAuthData } from "./interactive-auth.ts";
 import { IMinimalEvent, IRoomEvent, IStateEvent } from "./sync-accumulator.ts";
 import { CrossSigningKey, ICreateSecretStorageOpts, IEncryptedEventInfo, IRecoveryKey } from "./crypto/api.ts";
 import { EventTimelineSet } from "./models/event-timeline-set.ts";
@@ -239,6 +239,10 @@ import { RoomMessageEventContent, StickerEventContent } from "./@types/events.ts
 import { ImageInfo } from "./@types/media.ts";
 import { Capabilities, ServerCapabilities } from "./serverCapabilities.ts";
 import { sha256 } from "./digest.ts";
+
+import { Client } from "./bsspeke/BSSpekeWrapper.ts";
+import { fromByteArray, toByteArray } from "base64-js";
+import { RustCrypto } from "./rust-crypto/rust-crypto.ts";
 
 export type Store = IStore;
 
@@ -8172,7 +8176,123 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
      * @returns Promise which resolves to a LoginResponse object
      * @returns Rejects: with an error response.
      */
-    public login(loginType: LoginRequest["type"], data: Omit<LoginRequest, "type">): Promise<LoginResponse> {
+    public async login(loginType: LoginRequest["type"], data: Omit<LoginRequest, "type">): Promise<LoginResponse> {
+        // Circles login request
+
+        // Swiclops does not accept localpart user... Also hardcoding domain selection for now...
+        // const id = data.identifier;
+        let domain = "";
+        switch(this.baseUrl) {
+            case "https://matrix.circu.li":
+                domain = "circu.li";
+                break;
+            case "https://matrix.eu.circu.li":
+                domain = "eu.circu.li";
+                break;
+            case "https://matrix.circles.futo.org":
+                domain = "circles.futo.org";
+                break;
+            case "https://matrix.eu.circles.futo.org":
+                domain = "eu.circles.futo.org";
+                break;
+        }
+
+        const userId = `@${data.identifier.user}:${domain}`;
+        const id = {
+            "type": "m.id.user",
+            "user": userId,
+        };
+        const client = new Client(userId, domain, data.password);
+        RustCrypto.bsspekeClient = client;
+        const blind = await client.generateBlind();
+        const blindBase64 = fromByteArray(blind);
+
+        try {
+            this.logger.info("UIA Request 1");
+            await this.http.authedRequest<UIAResponse<IAuthData>>(Method.Post, "/login", undefined, { "identifier": id });
+        }
+        catch(r: any) {
+            // "httpStatus": 401,
+            // "url": "https://matrix.circu.li/_matrix/client/v3/login",
+            // "name": "Unknown error code"
+            const r1 = r.data as UIAResponse<IAuthData>;
+            const sessionId = r1.session;
+
+            // # Request 2: BS-SPEKE OPRF
+            // Information not returned from login stage?
+            // const oprfParams = r1.params?.["m.login.bsspeke-ecc.oprf"];
+            const oprfParams = r1.params?.["m.enroll.bsspeke-ecc.oprf"];
+            const curve = oprfParams?.["curve"];
+            const phfParams = oprfParams?.["phf_params"];
+
+            try {
+                this.logger.info("UIA Request 2");
+                await this.http.authedRequest<UIAResponse<IAuthData>>(Method.Post, "/login", undefined, {
+                    "identifier": id,
+                    "auth": {
+                        "type": "m.login.bsspeke-ecc.oprf",
+                        "curve": curve,
+                        "blind": blindBase64,
+                        "session": sessionId,
+                    },
+                });
+            }
+            catch(r: any) {
+                this.logger.info("UIA Response 2");
+                const r2 = r.data as UIAResponse<IAuthData>;
+
+                // # Request 3: BS-SPEKE Verify
+                const verifyParams = r2.params?.["m.login.bsspeke-ecc.verify"];
+                const blindSaltStr = verifyParams?.["blind_salt"];
+                const bStr = verifyParams?.["B"];
+                const blindSalt = toByteArray(blindSaltStr);
+                const b = toByteArray(bStr);
+
+                const aBytes = client.generateA(blindSalt, phfParams);
+                client.deriveSharedKey(b);
+                const verifierBytes = client.generateVerifier();
+
+                const a = fromByteArray(aBytes);
+                const verifier = fromByteArray(verifierBytes);
+
+                try {
+                    this.logger.info("UIA Request 3");
+                    await this.http.authedRequest<LoginResponse>(Method.Post, "/login", undefined, {
+                        "identifier": id,
+                        "auth": {
+                            "type": "m.login.bsspeke-ecc.verify",
+                            "A": a,
+                            "verifier": verifier,
+                            "session": sessionId,
+                        },
+                    });
+
+                    return this.http
+                        .authedRequest<LoginResponse>(Method.Post, "/login", undefined, {
+                            "identifier": id,
+                            "auth": {
+                                "type": "m.login.bsspeke-ecc.verify",
+                                "A": a,
+                                "verifier": verifier,
+                                "session": sessionId,
+                            },
+                        })
+                        .then((response) => {
+                            if (response.access_token && response.user_id) {
+                                this.http.opts.accessToken = response.access_token;
+                                this.credentials = {
+                                    userId: response.user_id,
+                                };
+                            }
+                            return response;
+                        });
+                }
+                catch(r: any) {
+                    this.logger.info(`UIA/Login response failed: ${JSON.stringify(r)}`);
+                }
+            }
+        }
+
         return this.http
             .authedRequest<LoginResponse>(Method.Post, "/login", undefined, {
                 ...data,

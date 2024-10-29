@@ -17,13 +17,17 @@ limitations under the License.
 import * as RustSdkCryptoJs from "@matrix-org/matrix-sdk-crypto-wasm";
 import { OlmMachine } from "@matrix-org/matrix-sdk-crypto-wasm";
 
-import { Curve25519AuthData, KeyBackupInfo, KeyBackupSession } from "../crypto-api/keybackup.ts";
+// import { Curve25519AuthData, KeyBackupInfo, KeyBackupSession } from "../crypto-api/keybackup.ts";
+import { KeyBackupInfo, KeyBackupSession } from "../crypto-api/keybackup.ts";
 import { Logger } from "../logger.ts";
 import { ClientPrefix, IHttpOpts, MatrixError, MatrixHttpApi, Method } from "../http-api/index.ts";
 import { RustBackupManager } from "./backup.ts";
 import { CryptoEvent } from "../matrix.ts";
 import { encodeUri, sleep } from "../utils.ts";
 import { BackupDecryptor } from "../common-crypto/CryptoBackend.ts";
+import { IKeyBackupInfo } from "../crypto/keybackup.ts";
+import { ServerSideSecretStorage } from "../secret-storage.ts";
+import { RustCrypto } from "./rust-crypto.ts";
 
 // The minimum time to wait between two retries in case of errors. To avoid hammering the server.
 const KEY_BACKUP_BACKOFF = 5000; // ms
@@ -116,9 +120,12 @@ export class PerSessionKeyBackupDownloader {
      */
     public constructor(
         logger: Logger,
+        // @ts-ignore
         private readonly olmMachine: OlmMachine,
         private readonly http: MatrixHttpApi<IHttpOpts & { onlyData: true }>,
         private readonly backupManager: RustBackupManager,
+        // Circles key backup decryption
+        private readonly secretStorage: ServerSideSecretStorage,
     ) {
         this.logger = logger.getChild("[PerSessionKeyBackupDownloader]");
 
@@ -238,13 +245,13 @@ export class PerSessionKeyBackupDownloader {
         return Math.max(Date.now() - lastCheck, 0) < KEY_BACKUP_BACKOFF;
     }
 
-    private async getBackupDecryptionKey(): Promise<RustSdkCryptoJs.BackupKeys | null> {
-        try {
-            return await this.olmMachine.getBackupKeys();
-        } catch (e) {
-            return null;
-        }
-    }
+    // private async getBackupDecryptionKey(): Promise<RustSdkCryptoJs.BackupKeys | null> {
+    //     try {
+    //         return await this.olmMachine.getBackupKeys();
+    //     } catch (e) {
+    //         return null;
+    //     }
+    // }
 
     /**
      * Requests a key from the server side backup.
@@ -456,45 +463,89 @@ export class PerSessionKeyBackupDownloader {
             return null;
         }
 
-        const activeVersion = await this.backupManager.getActiveBackupVersion();
-        if (activeVersion == null || currentServerVersion.version != activeVersion) {
-            // Either the current backup version on server side is not trusted, or it is out of sync with the active version on the client side.
-            this.logger.info(
-                `The current backup version on the server (${currentServerVersion.version}) is not trusted. Version we are currently backing up to: ${activeVersion}`,
-            );
+        // Allow Circles key backup
+        // const activeVersion = await this.backupManager.getActiveBackupVersion();
+        // if (activeVersion == null || currentServerVersion.version != activeVersion) {
+        //     // Either the current backup version on server side is not trusted, or it is out of sync with the active version on the client side.
+        //     this.logger.info(
+        //         `The current backup version on the server (${currentServerVersion.version}) is not trusted. Version we are currently backing up to: ${activeVersion}`,
+        //     );
+        //     this.hasConfigurationProblem = true;
+        //     return null;
+        // }
+
+        // const backupKeys = await this.getBackupDecryptionKey();
+        // if (!backupKeys?.decryptionKey) {
+        //     this.logger.debug(`Not checking key backup for session (no decryption key)`);
+        //     this.hasConfigurationProblem = true;
+        //     return null;
+        // }
+
+        // if (activeVersion != backupKeys.backupVersion) {
+        //     this.logger.debug(
+        //         `Version for which we have a decryption key (${backupKeys.backupVersion}) doesn't match the version we are backing up to (${activeVersion})`,
+        //     );
+        //     this.hasConfigurationProblem = true;
+        //     return null;
+        // }
+
+        // const authData = currentServerVersion.auth_data as Curve25519AuthData;
+        // if (authData.public_key != backupKeys.decryptionKey.megolmV1PublicKey.publicKeyBase64) {
+        //     this.logger.debug(`Key backup on server does not match our decryption key`);
+        //     this.hasConfigurationProblem = true;
+        //     return null;
+        // }
+
+        // Compute key from BSSPEKE info
+        const label = new TextEncoder().encode("matrix_ssss");
+        let k = new Uint8Array(32);
+        k = RustCrypto.bsspekeClient.generateHashedKey(k, label, label.length);
+
+        const backupInfo = await this.http.authedRequest<IKeyBackupInfo>(
+            Method.Get,
+            "/room_keys/version",
+            undefined,
+            undefined,
+            { prefix: ClientPrefix.V3 },
+        );
+
+        const activeVersion = backupInfo.version ? backupInfo.version : "";
+        const KEYBACKUP_SECRET_SSSS_NAME = "m.megolm_backup.v1";
+        const keyInfo = await this.secretStorage.getKey();
+
+        if (!keyInfo?.[0]) {
+            this.logger.info("Error fetching BSSPEKE key");
             this.hasConfigurationProblem = true;
             return null;
         }
 
-        const authData = currentServerVersion.auth_data as Curve25519AuthData;
+        try {
+            const secret = await this.secretStorage.get(KEYBACKUP_SECRET_SSSS_NAME, keyInfo, k);
 
-        const backupKeys = await this.getBackupDecryptionKey();
-        if (!backupKeys?.decryptionKey) {
-            this.logger.debug(`Not checking key backup for session (no decryption key)`);
-            this.hasConfigurationProblem = true;
-            return null;
+            if (secret) {
+                const recoveryKey = RustSdkCryptoJs.BackupDecryptionKey.fromBase64(secret);
+
+                const backupDecryptor = this.backupManager.createBackupDecryptor(recoveryKey);
+                this.hasConfigurationProblem = false;
+                this.configuration = {
+                    decryptor: backupDecryptor,
+                    backupVersion: activeVersion,
+                };
+                return this.configuration;
+            }
+        } catch (e) {
+            this.logger.info(`Error decrypting recovery key: ${JSON.stringify(e)}`);
         }
 
-        if (activeVersion != backupKeys.backupVersion) {
-            this.logger.debug(
-                `Version for which we have a decryption key (${backupKeys.backupVersion}) doesn't match the version we are backing up to (${activeVersion})`,
-            );
-            this.hasConfigurationProblem = true;
-            return null;
-        }
+        this.hasConfigurationProblem = true;
+        return null;
 
-        if (authData.public_key != backupKeys.decryptionKey.megolmV1PublicKey.publicKeyBase64) {
-            this.logger.debug(`getBackupDecryptor key mismatch error`);
-            this.hasConfigurationProblem = true;
-            return null;
-        }
-
-        const backupDecryptor = this.backupManager.createBackupDecryptor(backupKeys.decryptionKey);
-        this.hasConfigurationProblem = false;
-        this.configuration = {
-            decryptor: backupDecryptor,
-            backupVersion: activeVersion,
-        };
-        return this.configuration;
+        // const backupDecryptor = this.backupManager.createBackupDecryptor(backupKeys.decryptionKey);
+        // this.hasConfigurationProblem = false;
+        // this.configuration = {
+        //     decryptor: backupDecryptor,
+        //     backupVersion: activeVersion,
+        // };
+        // return this.configuration;
     }
 }

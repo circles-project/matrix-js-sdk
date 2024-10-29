@@ -81,6 +81,7 @@ import { OutgoingRequestsManager } from "./OutgoingRequestsManager.ts";
 import { PerSessionKeyBackupDownloader } from "./PerSessionKeyBackupDownloader.ts";
 import { DehydratedDeviceManager } from "./DehydratedDeviceManager.ts";
 import { VerificationMethod } from "../types.ts";
+import { Client } from "../bsspeke/BSSpekeWrapper.ts";
 
 const ALL_VERIFICATION_METHODS = [
     VerificationMethod.Sas,
@@ -117,6 +118,7 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, RustCryptoEv
     private readonly perSessionBackupDownloader: PerSessionKeyBackupDownloader;
     private readonly dehydratedDeviceManager: DehydratedDeviceManager;
     private readonly reemitter = new TypedReEmitter<RustCryptoEvents, RustCryptoEventMap>(this);
+    public static bsspekeClient: Client;
 
     public constructor(
         private readonly logger: Logger,
@@ -159,6 +161,8 @@ export class RustCrypto extends TypedEventEmitter<RustCryptoEvents, RustCryptoEv
             this.olmMachine,
             this.http,
             this.backupManager,
+            // Circles key backup decryption
+            secretStorage,
         );
         this.dehydratedDeviceManager = new DehydratedDeviceManager(
             this.logger,

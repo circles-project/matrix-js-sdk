@@ -280,7 +280,7 @@ export interface ServerSideSecretStorage {
      * @returns the decrypted contents of the secret, or "undefined" if `name` is not found in
      *    the user's account data.
      */
-    get(name: string): Promise<string | undefined>;
+    get(name: string, keyInfo?: SecretStorageKeyTuple, keySpec?: Uint8Array): Promise<string | undefined>;
 
     /**
      * Check if a secret is stored on the server.
@@ -540,7 +540,7 @@ export class ServerSideSecretStorageImpl implements ServerSideSecretStorage {
      * @returns the decrypted contents of the secret, or "undefined" if `name` is not found in
      *    the user's account data.
      */
-    public async get(name: string): Promise<string | undefined> {
+    public async get(name: string, keyInfo?: SecretStorageKeyTuple, keySpec?: Uint8Array): Promise<string | undefined> {
         const secretInfo = await this.accountDataAdapter.getAccountDataFromServer<SecretInfo>(name);
         if (!secretInfo) {
             return;
@@ -573,10 +573,18 @@ export class ServerSideSecretStorageImpl implements ServerSideSecretStorage {
         }
 
         // fetch private key from app
-        const [keyId, decryption] = await this.getSecretStorageKey(keys, name);
-        const encInfo = secretInfo.encrypted[keyId];
 
-        return decryption.decrypt(encInfo);
+        // Allow for circles backup key decryption
+        if (keyInfo && keySpec) {
+            const [keyId, decryption] = await this.getSecretStorageKey(keys, name, keyInfo, keySpec);
+            const encInfo = secretInfo.encrypted[keyId];
+            return decryption.decrypt(encInfo);
+        }
+        else {
+            const [keyId, decryption] = await this.getSecretStorageKey(keys, name);
+            const encInfo = secretInfo.encrypted[keyId];
+            return decryption.decrypt(encInfo);
+        }
     }
 
     /**
@@ -617,21 +625,35 @@ export class ServerSideSecretStorageImpl implements ServerSideSecretStorage {
     private async getSecretStorageKey(
         keys: Record<string, SecretStorageKeyDescriptionAesV1>,
         name: string,
+        keyInfo?: SecretStorageKeyTuple,
+        keySpec?: Uint8Array,
     ): Promise<[string, Decryptors]> {
-        if (!this.callbacks.getSecretStorageKey) {
-            throw new Error("No getSecretStorageKey callback supplied");
+        // Get private key from keySpec for BSSPEKE decryption
+        let keyId;
+        let privateKey;
+
+        if (!(keyInfo && keySpec)) {
+            if (!this.callbacks.getSecretStorageKey) {
+                throw new Error("No getSecretStorageKey callback supplied");
+            }
+
+            const returned = await this.callbacks.getSecretStorageKey({ keys }, name);
+
+            if (!returned) {
+                throw new Error("getSecretStorageKey callback returned falsey");
+            }
+            if (returned.length < 2) {
+                throw new Error("getSecretStorageKey callback returned invalid data");
+            }
+
+            [keyId, privateKey] = returned;
+        }
+        else {
+            keyId = keyInfo[0];
+            privateKey = keySpec;
         }
 
-        const returned = await this.callbacks.getSecretStorageKey({ keys }, name);
-
-        if (!returned) {
-            throw new Error("getSecretStorageKey callback returned falsey");
-        }
-        if (returned.length < 2) {
-            throw new Error("getSecretStorageKey callback returned invalid data");
-        }
-
-        const [keyId, privateKey] = returned;
+        // const [keyId, privateKey] = returned;
         if (!keys[keyId]) {
             throw new Error("App returned unknown key from getSecretStorageKey!");
         }
