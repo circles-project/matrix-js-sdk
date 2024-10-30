@@ -12,13 +12,17 @@ interface PhfParams {
   iterations: number;
 }
 
+// TODO: Add checks if module not initialized for public methods
+
 // Class to wrap the bsspeke client and interact with emscripten compiled code
 export class Client {
-  private ctx: any;
-  private useModule: any; // Module object from emscripten compiled bsspeke code that provides access to the compiled functions
-  private moduleInitialized: Promise<void>; // Promise that resolves when the emscripten module is initialized (added for module support of emscripten compiled Bsspeke code)
+  public static initialized = false;
 
-  public constructor(userId: string, serverId: string, password: string) {
+  private static ctx: any;
+  private static useModule: any; // Module object from emscripten compiled bsspeke code that provides access to the compiled functions
+  private static moduleInitialized: Promise<void>; // Promise that resolves when the emscripten module is initialized (added for module support of emscripten compiled Bsspeke code)
+
+  public static async initialize(userId: string, serverId: string, password: string): Promise<void> {
     this.moduleInitialized = new Promise((resolve) => {
       Module().then((Module: any) => {
         this.useModule = Module;
@@ -35,22 +39,24 @@ export class Client {
         // console.log("ctx: ", this.ctx);
         const success = this.useModule.ccall("bsspeke_client_init", "number", ["number", "string", "number", "string", "number", "string", "number"], [this.ctx, uidUtf8, uidUtf8.length, sidUtf8, sidUtf8.length, pwdUtf8, pwdUtf8.length]);
         console.log("Client init success: ", success);
+
+        this.initialized = true;
         resolve();
       });
     });
+
+     await this.moduleInitialized;
   }
 
   // Generates a blind for the client
-  public async generateBlind(): Promise<Uint8Array> {
-    await this.moduleInitialized;
-
+  public static generateBlind(): Uint8Array {
     const blindPointer = this.useModule.ccall("bsspeke_client_generate_blind", "number", ["array", "number"], [new Uint8Array(32), this.ctx]);
     const blind = new Uint8Array(this.useModule.HEAPU8.buffer, blindPointer, 32);
     return blind;
   }
 
   // Generates P and V hashes for the client
-  public generatePAndV(blindSalt: Uint8Array, phfParams: PhfParams): { PArray: Uint8Array; VArray: Uint8Array } {
+  public static generatePAndV(blindSalt: Uint8Array, phfParams: PhfParams): { PArray: Uint8Array; VArray: Uint8Array } {
     const P = this.useModule._malloc(32);
     const V = this.useModule._malloc(32);
     const blocks = phfParams.blocks;
@@ -64,7 +70,7 @@ export class Client {
     return { PArray, VArray };
   }
 
-  public generateA(blindSalt: Uint8Array, phfParams: PhfParams): Uint8Array {
+  public static generateA(blindSalt: Uint8Array, phfParams: PhfParams): Uint8Array {
     this.useModule.ccall("bsspeke_client_generate_A", "number", ["array", "number", "number", "number"], [blindSalt, phfParams.blocks, phfParams.iterations, this.ctx]);
 
     // different offset from header file?
@@ -77,18 +83,18 @@ export class Client {
     return AArray;
   }
 
-  public deriveSharedKey(b: Uint8Array): void {
+  public static deriveSharedKey(b: Uint8Array): void {
     this.useModule.ccall("bsspeke_client_derive_shared_key", null, ["array", "number"], [b, this.ctx]);
   }
 
-  public generateHashedKey(k: Uint8Array, msg: Uint8Array, msgLen: number): Uint8Array {
+  public static generateHashedKey(k: Uint8Array, msg: Uint8Array, msgLen: number): Uint8Array {
     const kPointer = this.useModule.ccall("bsspeke_client_generate_hashed_key", "number", ["array", "array", "number", "number"], [k, msg, msgLen, this.ctx]);
     const kArray = new Uint8Array(this.useModule.HEAPU8.buffer, kPointer, 32);
 
     return kArray;
   }
 
-  public generateVerifier(): Uint8Array {
+  public static generateVerifier(): Uint8Array {
     const clientVerifier = this.useModule._malloc(32);
 
     this.useModule.ccall("bsspeke_client_generate_verifier", "number", ["number", "number"], [clientVerifier, this.ctx]);

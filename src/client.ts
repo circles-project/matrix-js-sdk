@@ -242,7 +242,6 @@ import { sha256 } from "./digest.ts";
 
 import { Client } from "./bsspeke/BSSpekeWrapper.ts";
 import { fromByteArray, toByteArray } from "base64-js";
-import { RustCrypto } from "./rust-crypto/rust-crypto.ts";
 
 export type Store = IStore;
 
@@ -8202,9 +8201,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
             "type": "m.id.user",
             "user": userId,
         };
-        const client = new Client(userId, domain, data.password);
-        RustCrypto.bsspekeClient = client;
-        const blind = await client.generateBlind();
+        const blind = Client.generateBlind();
         const blindBase64 = fromByteArray(blind);
 
         try {
@@ -8248,9 +8245,9 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
                 const blindSalt = toByteArray(blindSaltStr);
                 const b = toByteArray(bStr);
 
-                const aBytes = client.generateA(blindSalt, phfParams);
-                client.deriveSharedKey(b);
-                const verifierBytes = client.generateVerifier();
+                const aBytes = Client.generateA(blindSalt, phfParams);
+                Client.deriveSharedKey(b);
+                const verifierBytes = Client.generateVerifier();
 
                 const a = fromByteArray(aBytes);
                 const verifier = fromByteArray(verifierBytes);

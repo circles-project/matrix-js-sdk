@@ -27,7 +27,6 @@ import { encodeUri, sleep } from "../utils.ts";
 import { BackupDecryptor } from "../common-crypto/CryptoBackend.ts";
 import { IKeyBackupInfo } from "../crypto/keybackup.ts";
 import { ServerSideSecretStorage } from "../secret-storage.ts";
-import { RustCrypto } from "./rust-crypto.ts";
 
 // The minimum time to wait between two retries in case of errors. To avoid hammering the server.
 const KEY_BACKUP_BACKOFF = 5000; // ms
@@ -497,9 +496,20 @@ export class PerSessionKeyBackupDownloader {
         // }
 
         // Compute key from BSSPEKE info
-        const label = new TextEncoder().encode("matrix_ssss");
-        let k = new Uint8Array(32);
-        k = RustCrypto.bsspekeClient.generateHashedKey(k, label, label.length);
+        const keyStr = localStorage.getItem("circles_bssepke_hashkey");
+        if (!keyStr) {
+            this.logger.info("Error fetching BSSPEKE hash key");
+            this.hasConfigurationProblem = true;
+            return null;
+        }
+        const kArray = JSON.parse(keyStr);
+
+        const k = new Uint8Array(32);
+
+        // Have to convert array formats in order for secret fetching to work
+        for (let i = 0; i < k.length; i++) {
+            k[i] = kArray[i];
+        }
 
         const backupInfo = await this.http.authedRequest<IKeyBackupInfo>(
             Method.Get,
