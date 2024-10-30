@@ -8285,7 +8285,39 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
                         });
                 }
                 catch(r: any) {
-                    this.logger.info(`UIA/Login response failed: ${JSON.stringify(r)}`);
+                    // Attempt terms stage if user has not signed out and signed back in previously
+                    try {
+                        this.logger.info("UIA Request 4");
+                        await this.http.authedRequest<LoginResponse>(Method.Post, "/login", undefined, {
+                            "identifier": id,
+                            "auth": {
+                                "type": "m.login.terms",
+                                "session": sessionId,
+                            },
+                        });
+
+                        return this.http
+                            .authedRequest<LoginResponse>(Method.Post, "/login", undefined, {
+                                "identifier": id,
+                                "auth": {
+                                    "type": "m.login.terms",
+                                    "session": sessionId,
+                                },
+                            })
+                            .then((response) => {
+                                if (response.access_token && response.user_id) {
+                                    this.http.opts.accessToken = response.access_token;
+                                    this.credentials = {
+                                        userId: response.user_id,
+                                    };
+                                }
+                                return response;
+                            });
+                    }
+                    catch(r: any) {
+                        // Attempt terms stage if user has not signed out and signed back in previously
+                        this.logger.info(`UIA/Login response failed: ${JSON.stringify(r)}`);
+                    }
                 }
             }
         }
