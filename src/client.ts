@@ -8178,23 +8178,8 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
     public async login(loginType: LoginRequest["type"], data: Omit<LoginRequest, "type">): Promise<LoginResponse> {
         // Circles login request
 
-        // Swiclops does not accept localpart user... Also hardcoding domain selection for now...
-        // const id = data.identifier;
-        let domain = "";
-        switch(this.baseUrl) {
-            case "https://matrix.circu.li":
-                domain = "circu.li";
-                break;
-            case "https://matrix.eu.circu.li":
-                domain = "eu.circu.li";
-                break;
-            case "https://matrix.circles.futo.org":
-                domain = "circles.futo.org";
-                break;
-            case "https://matrix.eu.circles.futo.org":
-                domain = "eu.circles.futo.org";
-                break;
-        }
+        // Swiclops does not accept localpart user...
+        const domain = this.baseUrl.substring(this.baseUrl.includes("matrix") ? 15 : 8);
 
         const userId = `@${data.identifier.user}:${domain}`;
         const id = {
@@ -8214,11 +8199,13 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
             // "name": "Unknown error code"
             const r1 = r.data as UIAResponse<IAuthData>;
             const sessionId = r1.session;
+            // this.logger.info(`${JSON.stringify(r1)}`);
 
             // # Request 2: BS-SPEKE OPRF
             // Information not returned from login stage?
-            // const oprfParams = r1.params?.["m.login.bsspeke-ecc.oprf"];
-            const oprfParams = r1.params?.["m.enroll.bsspeke-ecc.oprf"];
+            const oprfParams = r1.params?.["m.login.bsspeke-ecc.oprf"];
+            // Perhaps old registered users use 'enroll' instead of 'login'?
+            // const oprfParams = r1.params?.["m.enroll.bsspeke-ecc.oprf"];
             const curve = oprfParams?.["curve"];
             const phfParams = oprfParams?.["phf_params"];
 
@@ -8237,6 +8224,7 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
             catch(r: any) {
                 this.logger.info("UIA Response 2");
                 const r2 = r.data as UIAResponse<IAuthData>;
+                // this.logger.info(`${JSON.stringify(r2)}`);
 
                 // # Request 3: BS-SPEKE Verify
                 const verifyParams = r2.params?.["m.login.bsspeke-ecc.verify"];
@@ -8285,6 +8273,8 @@ export class MatrixClient extends TypedEventEmitter<EmittedEvents, ClientEventHa
                         });
                 }
                 catch(r: any) {
+                    // this.logger.info(`${JSON.stringify(r)}`);
+
                     // Attempt terms stage if user has not signed out and signed back in previously
                     try {
                         this.logger.info("UIA Request 4");
